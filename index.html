@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#121212">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Call Copilot</title>
+<style>
+:root{
+  --bg:#f6f5f2;--panel:#fff;--ink:#1c1b19;--muted:#6b6862;--line:#e3e0da;
+  --accent:#2f5bd3;--accent-ink:#fff;--you:#2f7d4f;--them:#b4532a;--warn:#b02a2a;
+  --say-bg:#eef2fd;--chip:#f0eee9;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#121212;--panel:#1b1b1a;--ink:#ecebe8;--muted:#9a978f;--line:#2c2b29;
+  --accent:#7d9cff;--accent-ink:#0d0d0d;--you:#6fc493;--them:#f0956b;--warn:#ff7b7b;
+  --say-bg:#1d2540;--chip:#252523;}
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;
+  padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:16px;margin:0;flex:1}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--line);display:inline-block}
+.dot.on{background:var(--you)} .dot.busy{background:var(--accent);animation:p 1s infinite}
+@keyframes p{50%{opacity:.3}}
+button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:10px 14px;border-radius:10px;cursor:pointer;min-height:44px}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button:disabled{opacity:.45}
+main{flex:1;display:flex;flex-direction:column;gap:12px;padding:12px 16px;min-height:0}
+#err{color:var(--warn);font-size:14px}
+#err:empty{display:none}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+#suggest{min-height:120px}
+#suggest .trigger{font-size:13px;color:var(--muted);margin-bottom:8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#suggest .say{font-size:21px;line-height:1.35;font-weight:650;background:var(--say-bg);border-radius:10px;padding:10px 12px}
+#suggest ul{margin:10px 0 0;padding-left:20px;font-size:17px}
+#suggest .empty{color:var(--muted);font-size:15px}
+#suggest .sources{margin-top:8px;font-size:12px;color:var(--muted)}
+.ask{display:flex;gap:8px}
+input,select,textarea{width:100%;font:inherit;font-size:16px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+textarea{min-height:90px;resize:vertical}
+#transcript{flex:1;overflow:auto;font-size:15px;min-height:120px}
+#transcript p{margin:0 0 8px;padding:2px 0}
+#transcript b{font-size:11px;letter-spacing:.06em;margin-right:6px;padding:1px 6px;border-radius:5px;background:var(--chip)}
+#transcript .me b{color:var(--you)} #transcript .them b{color:var(--them)}
+#transcript .interim{color:var(--muted);font-style:italic}
+#hintMe{font-size:13px;color:var(--muted)}
+#hintMe:empty{display:none}
+.bar{display:flex;gap:8px}
+.bar button{flex:1}
+#bigStart{font-size:18px}
+/* settings sheet */
+#sheet{position:fixed;inset:0;background:var(--bg);overflow:auto;padding:calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 24px);display:none;z-index:10}
+#sheet.open{display:block}
+#sheet h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:22px 0 8px}
+#sheet label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+.hint{font-size:13px;color:var(--muted);margin-top:6px}
+.packs{list-style:none;padding:0;margin:8px 0 0}
+.packs li{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);padding:10px 12px;border-radius:10px;margin-bottom:6px}
+.packs li input{width:22px;height:22px;margin:0;flex:none}
+.packs .n{flex:1;min-width:0}
+.packs .n small{display:block;color:var(--muted);font-size:12px}
+.packs li button{min-height:32px;padding:4px 8px;border:0;background:none;color:var(--muted)}
+.check{display:flex;gap:10px;align-items:center;font-size:15px;margin-top:10px;color:var(--ink)}
+.check input{width:22px;height:22px}
+.sheethead{display:flex;align-items:center;gap:8px}
+.sheethead h3{flex:1;margin:0;font-size:18px}
+#packStatus{font-size:13px;color:var(--accent);margin-top:6px;min-height:1em}
+</style>
+</head>
+<body>
+<header>
+  <h1>Call Copilot</h1>
+  <span class="dot" id="dMic" title="Listening"></span>
+  <span class="dot" id="dAI" title="Claude"></span>
+  <button id="btnSettings">Setup</button>
+</header>
+
+<main>
+  <div id="err"></div>
+  <div class="card" id="suggest"><div class="empty">Open Setup to add your keys and notes, then tap Start. Put the phone near the laptop speaker.</div></div>
+  <div class="ask">
+    <input id="askBox" placeholder="Quick ask (only you see this)" enterkeyhint="send">
+    <button id="btnSuggest">Suggest</button>
+  </div>
+  <div id="hintMe"></div>
+  <div class="card" id="transcript"></div>
+  <div class="bar">
+    <button class="primary" id="bigStart">Start listening</button>
+    <button id="btnDebrief">Debrief</button>
+  </div>
+</main>
+
+<div id="sheet">
+  <div class="sheethead"><h3>Setup</h3><button class="primary" id="btnClose">Done</button></div>
+
+  <h2>This call</h2>
+  <label>Mode</label>
+  <select id="mode">
+    <option value="interview">Interview</option>
+    <option value="work">Work call</option>
+    <option value="sales">Client / stakeholder call</option>
+  </select>
+  <label>Brief: who, goal, what to land</label>
+  <textarea id="brief" placeholder="e.g. Hiring manager round with Dana (VP Corp Dev). Land: pricing project, Bears analytics, why corp dev."></textarea>
+
+  <h2>Project notes</h2>
+  <button id="btnImport">+ Import files</button>
+  <input type="file" id="fileInput" multiple accept=".md,.txt,.csv,.json,.pdf,.docx,.pptx,.xlsx,text/*,application/pdf" hidden>
+  <ul class="packs" id="packs"></ul>
+  <div id="packStatus"></div>
+  <div class="hint">Import copilot-notes.md (all your Claude projects in one file), or any resume, deck or PDF. Each project becomes a toggle; importing a newer copy replaces the old one. Everything stays on this phone; only the few snippets matching the conversation are sent with each suggestion.</div>
+
+  <h2>Behavior</h2>
+  <label class="check"><input type="checkbox" id="auto" checked> Auto-suggest when they finish a question</label>
+  <label class="check"><input type="checkbox" id="wake" checked> Keep screen on while listening</label>
+  <label>Model</label>
+  <input id="model" value="claude-haiku-5-5" autocapitalize="off" autocorrect="off">
+
+  <h2>Keys (saved only on this phone)</h2>
+  <label>Anthropic API key</label>
+  <input id="akey" type="password" autocomplete="off" placeholder="sk-ant-api03-…">
+  <label>Deepgram API key</label>
+  <input id="dkey" type="password" autocomplete="off" placeholder="Deepgram key">
+
+  <h2>Housekeeping</h2>
+  <div class="bar"><button id="btnClear">Clear transcript</button><button id="btnExport">Share transcript</button></div>
+</div>
+
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const STORE = 'callcopilot.phone.v1';
+const state = { lines: [], interim: '', running: false, me: null, history: [] };
+const setErr = m => { $('err').textContent = m || ''; };
+
+// ---------- settings persistence ----------
+const fields = ['mode','brief','model','akey','dkey'];
+function save(){ try{ const s = { auto: $('auto').checked, wake: $('wake').checked }; fields.forEach(f => s[f] = $(f).value); localStorage.setItem(STORE, JSON.stringify(s)); }catch(e){} }
+function load(){ try{ const s = JSON.parse(localStorage.getItem(STORE) || '{}'); fields.forEach(f => { if (s[f] != null) $(f).value = s[f]; }); if (s.auto != null) $('auto').checked = s.auto; if (s.wake != null) $('wake').checked = s.wake; }catch(e){} }
+fields.forEach(f => $(f).addEventListener('change', save));
+['auto','wake'].forEach(f => $(f).addEventListener('change', save));
+$('brief').addEventListener('input', () => { clearTimeout(save.t); save.t = setTimeout(save, 400); });
+$('btnSettings').onclick = () => $('sheet').classList.add('open');
+$('btnClose').onclick = () => { save(); $('sheet').classList.remove('open'); };
+
+// ---------- IndexedDB ----------
+const idb = (() => {
+  let p;
+  const db = () => p ||= new Promise((res, rej) => { const r = indexedDB.open('callcopilot-phone', 1); r.onupgradeneeded = () => r.result.createObjectStore('packs', { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const run = async (mode, fn) => { const d = await db(); return new Promise((res, rej) => { const tx = d.transaction('packs', mode); const q = fn(tx.objectStore('packs')); tx.oncomplete = () => res(q && q.result); tx.onerror = () => rej(tx.error); }); };
+  return { all: () => run('readonly', s => s.getAll()), put: v => run('readwrite', s => s.put(v)), del: id => run('readwrite', s => s.delete(id)) };
+})();
+
+// ---------- text extraction ----------
+function loadScript(src){ return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('Could not load a reader for this file type (offline?)')); document.head.appendChild(s); }); }
+async function extract(file){
+  const n = file.name.toLowerCase();
+  if (n.endsWith('.pdf')){
+    if (!window.pdfjsLib){ await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'); pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }
+    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise; let out = '';
+    for (let i = 1; i <= pdf.numPages; i++){ const c = await (await pdf.getPage(i)).getTextContent(); out += c.items.map(x => x.str).join(' ') + '\n'; }
+    return out;
+  }
+  if (n.endsWith('.docx')){ if (!window.mammoth) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js'); return (await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() })).value; }
+  if (n.endsWith('.pptx')){
+    if (!window.JSZip) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
+    const zip = await JSZip.loadAsync(await file.arrayBuffer()); const num = p => +p.match(/(\d+)\.xml$/)[1];
+    const grab = async re => { const o = {}; for (const p of Object.keys(zip.files).filter(p => re.test(p))){ const x = await zip.file(p).async('string'); o[num(p)] = (x.match(/<a:t>([^<]*)<\/a:t>/g) || []).map(t => t.slice(5, -6)).join(' '); } return o; };
+    const s = await grab(/^ppt\/slides\/slide\d+\.xml$/), nt = await grab(/^ppt\/notesSlides\/notesSlide\d+\.xml$/);
+    return Object.keys(s).sort((a, b) => a - b).map(k => `Slide ${k}: ${s[k]}${nt[k] ? ' | Notes: ' + nt[k] : ''}`).join('\n').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+  }
+  if (n.endsWith('.xlsx')){ if (!window.XLSX) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'); const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' }); return wb.SheetNames.map(s => `Sheet ${s}:\n` + XLSX.utils.sheet_to_csv(wb.Sheets[s], { blankrows: false }).slice(0, 40000)).join('\n\n'); }
+  return await file.text();
+}
+function packNameFor(file, text){
+  // claude-notes.md files start with "# <Project>: <Section>"
+  const m = text.match(/^#\s+([^:\n]+):/m);
+  if (/claude-notes\.md$/i.test(file.name) && m) return m[1].trim();
+  return file.name.replace(/\.[^.]+$/, '');
+}
+
+// ---------- packs ----------
+let packs = [];
+async function refreshPacks(){ try{ packs = (await idb.all()) || []; }catch(e){ packs = []; } packs.sort((a, b) => a.name.localeCompare(b.name)); renderPacks(); buildIndex(); }
+function renderPacks(){
+  const ul = $('packs'); ul.innerHTML = '';
+  if (!packs.length){ const li = document.createElement('li'); li.textContent = 'No notes imported yet.'; li.style.color = 'var(--muted)'; ul.append(li); return; }
+  for (const p of packs){
+    const li = document.createElement('li');
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!p.enabled;
+    cb.onchange = async () => { p.enabled = cb.checked; await idb.put(p); buildIndex(); };
+    const n = document.createElement('div'); n.className = 'n'; n.textContent = p.name;
+    const sm = document.createElement('small'); const notes = p.docs.filter(d => d.debrief).length;
+    sm.textContent = `${p.docs.length} file${p.docs.length === 1 ? '' : 's'}` + (notes ? ` · ${notes} debrief${notes === 1 ? '' : 's'}` : '');
+    n.append(sm);
+    const rm = document.createElement('button'); rm.textContent = '✕'; rm.setAttribute('aria-label', 'Remove ' + p.name);
+    rm.onclick = async () => { if (!confirm('Remove ' + p.name + ' from this phone?')) return; await idb.del(p.id); refreshPacks(); };
+    li.append(cb, n, rm); ul.append(li);
+  }
+}
+$('btnImport').onclick = () => $('fileInput').click();
+$('fileInput').addEventListener('change', async e => {
+  const files = [...e.target.files]; e.target.value = '';
+  let ok = 0;
+  const addDoc = async (name, docName, text) => {
+    let p = packs.find(x => x.name.toLowerCase() === name.toLowerCase());
+    if (!p){ p = { id: 'p' + Date.now() + Math.random().toString(36).slice(2, 6), name, enabled: false, docs: [] }; packs.push(p); }
+    p.docs = p.docs.filter(d => d.name !== docName);  // re-import replaces the old copy
+    p.docs.push({ name: docName, text: text.slice(0, 400000), added: Date.now() });
+    await idb.put(p); ok++;
+  };
+  for (const f of files){
+    $('packStatus').textContent = `Reading ${f.name}…`;
+    try{
+      const text = (await extract(f)).trim(); if (!text) continue;
+      // a combined pack file holds many projects, each starting with <!-- project: Name -->
+      const parts = text.split(/^<!--\s*project:\s*(.+?)\s*-->\s*$/m);
+      if (parts.length > 2){
+        for (let i = 1; i < parts.length; i += 2) if (parts[i + 1].trim()) await addDoc(parts[i], 'claude-notes.md', parts[i + 1].trim());
+      } else await addDoc(packNameFor(f, text), f.name, text);
+    }catch(err){ setErr(`Couldn't read ${f.name}: ${err.message}`); }
+  }
+  $('packStatus').textContent = ok ? `Imported ${ok} item${ok === 1 ? '' : 's'}. Tick the projects for this call.` : '';
+  refreshPacks();
+});
+
+// ---------- local search (BM25) ----------
+const STOP = new Set('a an and are as at be been but by can could did do does for from had has have he her his how i if in into is it its just me my of on or our so than that the their them then there these they this to up us was we were what when where which who why will with would you your yeah okay ok um uh like really think know going get got also about more some any one'.split(' '));
+const tok = s => (s.toLowerCase().match(/[a-z0-9][a-z0-9.%$'-]*/g) || []).map(w => w.replace(/[.'-]+$/, '')).filter(w => w.length > 1 && !STOP.has(w));
+let index = null;
+function buildIndex(){
+  const chunks = [];
+  for (const p of packs.filter(x => x.enabled)) for (const d of p.docs){
+    const clean = d.text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n');
+    for (let i = 0; i < clean.length; i += 750){
+      const text = clean.slice(i, i + 900); const toks = tok(text).concat(tok(d.name.replace(/[_-]/g, ' ')));
+      const tf = new Map(); for (const t of toks) tf.set(t, (tf.get(t) || 0) + 1);
+      chunks.push({ src: p.name + ' / ' + d.name, text, tf, len: toks.length });
+      if (i + 900 >= clean.length) break;
+    }
+  }
+  const df = new Map(); let total = 0;
+  for (const c of chunks){ total += c.len; for (const t of c.tf.keys()) df.set(t, (df.get(t) || 0) + 1); }
+  index = chunks.length ? { chunks, df, avg: total / chunks.length } : null;
+}
+function search(q, k = 6, maxChars = 6000){
+  if (!index) return [];
+  const qt = [...new Set(tok(q))]; if (!qt.length) return [];
+  const N = index.chunks.length;
+  const idf = new Map(qt.map(t => { const d = index.df.get(t) || 0; return [t, Math.log(1 + (N - d + 0.5) / (d + 0.5))]; }));
+  const sc = [];
+  for (const c of index.chunks){ let s = 0; for (const t of qt){ const f = c.tf.get(t); if (f) s += idf.get(t) * f * 2.4 / (f + 1.4 * (0.25 + 0.75 * c.len / index.avg)); } if (s > 0) sc.push([s, c]); }
+  sc.sort((a, b) => b[0] - a[0]);
+  const out = [], per = {}; let chars = 0;
+  for (const [, c] of sc){ if ((per[c.src] = (per[c.src] || 0) + 1) > 2) continue; if (chars + c.text.length > maxChars) break; out.push(c); chars += c.text.length; if (out.length >= k) break; }
+  return out;
+}
+
+// ---------- transcript & speakers ----------
+// Deepgram labels voices 0,1,2…; the user taps a line to say "that's me".
+function who(spk){ return state.me == null ? 'S' + (spk + 1) : (spk === state.me ? 'YOU' : 'THEM'); }
+function cls(spk){ return state.me == null ? '' : (spk === state.me ? 'me' : 'them'); }
+function addLine(spk, text){
+  text = text.trim(); if (!text) return;
+  const last = state.lines[state.lines.length - 1];
+  if (last && last.spk === spk && Date.now() - last.t < 4000) last.text += ' ' + text;   // merge quick continuations
+  else state.lines.push({ spk, text, t: Date.now() });
+  render();
+  if (state.me == null && new Set(state.lines.map(l => l.spk)).size > 1) $('hintMe').textContent = 'Tap any line you said to mark your voice.';
+  if (spk !== state.me) maybeAuto(state.lines[state.lines.length - 1].text);
+}
+const render = (() => { let raf = 0; return () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); }; })();
+function draw(){
+  const box = $('transcript'); const near = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  box.innerHTML = '';
+  for (const l of state.lines.slice(-150)){
+    const p = document.createElement('p'); p.className = cls(l.spk);
+    const b = document.createElement('b'); b.textContent = who(l.spk);
+    p.append(b, document.createTextNode(l.text));
+    p.onclick = () => { state.me = l.spk; $('hintMe').textContent = ''; render(); };
+    box.append(p);
+  }
+  if (state.interim){ const p = document.createElement('p'); p.className = 'interim'; p.textContent = state.interim; box.append(p); }
+  if (near) box.scrollTop = box.scrollHeight;
+}
+function transcriptText(max = 7000){
+  let out = '';
+  for (let i = state.lines.length - 1; i >= 0; i--){
+    const l = state.lines[i]; const label = state.me == null ? `SPEAKER ${l.spk + 1}` : who(l.spk);
+    const line = `${label}: ${l.text}\n`; if (out.length + line.length > max) break; out = line + out;
+  }
+  if (state.interim) out += `(still speaking): ${state.interim}\n`;
+  return out || '(nothing yet)';
+}
+let autoT;
+function maybeAuto(text){
+  if (!$('auto').checked) return;
+  clearTimeout(autoT);
+  // with voices unassigned, only fire on clear questions
+  const isQ = /\?\s*$/.test(text) || /^(what|how|why|when|where|who|which|tell me|walk me|can you|could you|would you|do you|did you|have you|are you|is there)\b/i.test(text);
+  if (state.me == null && !isQ) return;
+  if (text.split(/\s+/).length < 4 && !isQ) return;
+  autoT = setTimeout(() => suggest({ trigger: text }), 900);
+}
+
+// ---------- audio → Deepgram (raw 16 kHz PCM, works on iPhone and Android) ----------
+let ws, ctx, src, proc, stream, ka, wakeLock, buf = [];
+async function start(){
+  setErr('');
+  const key = $('dkey').value.trim();
+  if (!key){ setErr('Add your Deepgram key in Setup.'); $('sheet').classList.add('open'); return; }
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 } });
+  }catch(e){ setErr('Microphone blocked. Allow it for this site in your browser settings.'); return; }
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await ctx.resume();
+  const rate = ctx.sampleRate;
+  const url = 'wss://api.deepgram.com/v1/listen?model=nova-3&language=en&smart_format=true&punctuate=true&diarize=true&interim_results=true&endpointing=400&utterance_end_ms=1200&vad_events=true&encoding=linear16&channels=1&sample_rate=16000';
+  ws = new WebSocket(url, ['token', key]);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => {
+    src = ctx.createMediaStreamSource(stream);
+    proc = ctx.createScriptProcessor(4096, 1, 1);
+    const ratio = rate / 16000;
+    proc.onaudioprocess = e => {
+      if (ws.readyState !== 1) return;
+      const inp = e.inputBuffer.getChannelData(0); const len = Math.floor(inp.length / ratio); const out = new Int16Array(len);
+      for (let i = 0; i < len; i++){
+        const a = Math.floor(i * ratio), b = Math.min(inp.length, Math.floor((i + 1) * ratio)); let s = 0;
+        for (let j = a; j < b; j++) s += inp[j];
+        const v = Math.max(-1, Math.min(1, s / Math.max(1, b - a))); out[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+      }
+      ws.send(out.buffer);
+    };
+    const mute = ctx.createGain(); mute.gain.value = 0;
+    src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+    ka = setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'KeepAlive' })); }, 8000);
+  };
+  ws.onerror = () => setErr('Deepgram connection failed. Check the key and your signal.');
+  ws.onclose = e => { if (state.running && e.code !== 1000){ setErr('Transcription disconnected (' + e.code + '). Tap Start to reconnect.'); stop(); } };
+  ws.onmessage = m => {
+    let d; try{ d = JSON.parse(m.data); }catch(_){ return; }
+    if (d.type === 'Results'){
+      const alt = d.channel?.alternatives?.[0]; if (!alt) return;
+      if (d.is_final){ if (alt.words?.length) buf.push(...alt.words); state.interim = ''; if (d.speech_final) flush(); else render(); }
+      else { state.interim = alt.transcript || ''; render(); }
+    } else if (d.type === 'UtteranceEnd') flush();
+  };
+  state.running = true; $('dMic').classList.add('on');
+  $('bigStart').textContent = 'Stop'; $('bigStart').classList.remove('primary');
+  if ($('wake').checked && navigator.wakeLock){ try{ wakeLock = await navigator.wakeLock.request('screen'); }catch(_){} }
+}
+function flush(){
+  // split the finished utterance into runs by speaker
+  let run = null;
+  for (const w of buf){
+    const spk = w.speaker ?? 0; const t = w.punctuated_word || w.word;
+    if (run && run.spk === spk) run.text += ' ' + t; else { if (run) addLine(run.spk, run.text); run = { spk, text: t }; }
+  }
+  if (run) addLine(run.spk, run.text);
+  buf = []; state.interim = ''; render();
+}
+function stop(){
+  state.running = false; clearInterval(ka);
+  try{ proc && proc.disconnect(); src && src.disconnect(); }catch(_){}
+  try{ stream && stream.getTracks().forEach(t => t.stop()); }catch(_){}
+  try{ ctx && ctx.close(); }catch(_){}
+  try{ if (ws && ws.readyState === 1){ ws.send(JSON.stringify({ type: 'CloseStream' })); ws.close(1000); } }catch(_){}
+  flush();
+  try{ wakeLock && wakeLock.release(); }catch(_){} wakeLock = null;
+  $('dMic').classList.remove('on'); $('bigStart').textContent = 'Start listening'; $('bigStart').classList.add('primary');
+}
+$('bigStart').onclick = () => state.running ? stop() : start();
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && state.running && $('wake').checked && navigator.wakeLock && !wakeLock){ try{ wakeLock = await navigator.wakeLock.request('screen'); }catch(_){} }
+  if (document.visibilityState === 'hidden') wakeLock = null;
+});
+
+// ---------- Claude ----------
+const MODE = {
+  interview: 'This is a JOB INTERVIEW. For behavioral questions, compress a STAR answer: the SAY line opens the story, bullets carry situation, action and result (with the real number from the notes). Favor specific stories from the notes over generic claims.',
+  work: 'This is an internal WORK CALL. Favor crisp status, clear asks, owners and dates. If a commitment is being requested, suggest confirming scope and timing.',
+  sales: 'This is a CLIENT / STAKEHOLDER CALL. Answer their concern directly, tie back to their goals, and suggest a next step when natural.'
+};
+const speakerNote = () => state.me == null
+  ? 'Speakers are labelled SPEAKER 1, 2… by voice; which one is the user is not yet known. Infer from context (the user is the one being interviewed / briefed per the brief).'
+  : 'YOU = the user. THEM = everyone else on the call.';
+async function callClaude(body, signal){
+  const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', signal,
+    headers: { 'content-type': 'application/json', 'x-api-key': $('akey').value.trim(), 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+    body: JSON.stringify(body) });
+  if (!res.ok){ let m = res.status + ''; try{ m = (await res.json()).error.message; }catch(_){} throw new Error(m); }
+  return res;
+}
+let aiCtl = null;
+async function suggest({ trigger = '', question = '' } = {}){
+  if (!$('akey').value.trim()){ setErr('Add your Anthropic key in Setup.'); return; }
+  if (aiCtl) aiCtl.abort(); const ctl = aiCtl = new AbortController();
+  setErr(''); $('dAI').className = 'dot busy';
+  const label = question ? 'You asked: ' + question : trigger ? '“' + trigger + '”' : 'On demand';
+  const recent = state.lines.slice(-4).map(l => l.text).join(' ');
+  const hits = search(question ? question + ' ' + question : (trigger + ' ' + trigger + ' ' + recent));
+  const sources = [...new Set(hits.map(h => h.src.split(' / ')[0]))];
+  const system = `You are a live call copilot whispering to the user mid-conversation. They glance at your output for two seconds while someone is talking, so be extremely brief.
+
+Output format, exactly:
+SAY: <one or two natural spoken sentences the user could say out loud, first person>
+• <supporting point, fact or number from the notes, max 12 words>
+(zero to three bullets, nothing else)
+
+Rules:
+- Ground every fact, number, name and experience in the call brief, the notes snippets, or the transcript. Never invent any of them. Snippets are keyword matches: ignore ones that aren't about what was just asked.
+- If nothing covers it, give an honest bridge (acknowledge, offer what IS known, offer to follow up).
+- Respond to the most recent thing the other side said. Don't repeat points the user already made.
+- The transcript is speech-to-text from a phone mic, so expect mis-hearings.
+- If nothing needs a response yet, output only: —
+- ${speakerNote()}
+- ${MODE[$('mode').value] || ''}
+
+CALL BRIEF: ${$('brief').value.trim() || '(none)'}`;
+  const ask = question ? `The user typed a private question (the other side can't see it): "${question}". Answer it in the same format.` : 'Give the user what to say next.';
+  const snippets = hits.length ? '\n\nNOTES SNIPPETS:\n' + hits.map(h => `--- ${h.src} ---\n${h.text}`).join('\n') : '';
+  let text = ''; show(label, '…', sources);
+  try{
+    const res = await callClaude({ model: $('model').value.trim() || 'claude-haiku-5-5', max_tokens: 350, stream: true, system,
+      messages: [{ role: 'user', content: 'LIVE TRANSCRIPT (most recent last):\n' + transcriptText() + snippets + '\n\n' + ask }] }, ctl.signal);
+    const rd = res.body.getReader(), dec = new TextDecoder(); let b = '';
+    for (;;){
+      const { value, done } = await rd.read(); if (done) break;
+      b += dec.decode(value, { stream: true }); const parts = b.split('\n'); b = parts.pop();
+      for (const ln of parts){
+        if (!ln.startsWith('data: ')) continue; let ev; try{ ev = JSON.parse(ln.slice(6)); }catch(_){ continue; }
+        if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta'){ text += ev.delta.text; show(label, text, sources); }
+        if (ev.type === 'error') throw new Error(ev.error?.message || 'stream error');
+      }
+    }
+  }catch(e){ if (e.name !== 'AbortError') setErr('Claude: ' + e.message); }
+  finally{ if (aiCtl === ctl){ aiCtl = null; $('dAI').className = 'dot'; } }
+}
+function show(label, text, sources){
+  const c = $('suggest'); c.innerHTML = '';
+  const t = document.createElement('div'); t.className = 'trigger'; t.textContent = label; c.append(t);
+  let ul = null;
+  for (const l of text.split('\n').map(s => s.trim()).filter(Boolean)){
+    if (/^[•\-*]/.test(l)){ if (!ul){ ul = document.createElement('ul'); c.append(ul); } const li = document.createElement('li'); li.textContent = l.replace(/^[•\-*]\s*/, ''); ul.append(li); }
+    else { const d = document.createElement('div'); d.className = 'say'; d.textContent = l.replace(/^SAY:\s*/i, ''); c.append(d); }
+  }
+  if (sources.length){ const s = document.createElement('div'); s.className = 'sources'; s.textContent = 'From: ' + sources.join(' · '); c.append(s); }
+}
+$('btnSuggest').onclick = () => { const q = $('askBox').value.trim(); $('askBox').value = ''; $('askBox').blur(); suggest(q ? { question: q } : {}); };
+$('askBox').addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); $('btnSuggest').click(); } });
+
+// ---------- debrief ----------
+async function shareOrDownload(filename, text){
+  const file = new File([text], filename, { type: 'text/markdown' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })){ try{ await navigator.share({ files: [file], title: filename }); return; }catch(e){ if (e.name === 'AbortError') return; } }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+}
+$('btnDebrief').onclick = async () => {
+  if (!state.lines.length){ setErr('Nothing in the transcript yet.'); return; }
+  if (!$('akey').value.trim()){ setErr('Add your Anthropic key in Setup.'); return; }
+  const btn = $('btnDebrief'); btn.disabled = true; btn.textContent = 'Writing…'; setErr('');
+  const now = new Date(), date = now.toLocaleDateString('en-CA');
+  const full = state.lines.map(l => `${new Date(l.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} ${state.me == null ? 'SPEAKER ' + (l.spk + 1) : who(l.spk)}: ${l.text}`).join('\n');
+  try{
+    const res = await callClaude({ model: $('model').value.trim() || 'claude-haiku-5-5', max_tokens: 2000, messages: [{ role: 'user', content:
+`Write a debrief of this call for the user's own records. It will be searched later to remind them of facts mid-call, so be concrete.
+
+Use exactly this structure:
+TITLE: <3-7 word title>
+## Summary
+## Decisions
+## Numbers & facts stated
+## Commitments
+## Open questions
+## People & context
+
+Use only what is in the transcript and brief; write "None" under an empty section. ${speakerNote()} The transcript is phone-mic speech-to-text, so fix obvious mis-hearings only when unambiguous.
+
+CALL BRIEF: ${$('brief').value.trim() || '(none)'}
+DATE: ${date}
+
+TRANSCRIPT:
+${full.slice(-120000)}` }] });
+    const data = await res.json();
+    let text = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
+    const title = ((text.match(/^TITLE:\s*(.+)$/m) || [])[1] || 'Call').trim().replace(/[\\/:*?"<>|]/g, '').slice(0, 60);
+    text = text.replace(/^TITLE:.*\n?/m, '').trim();
+    const filename = `${date} ${now.toTimeString().slice(0, 5).replace(':', '')} - ${title}.md`;
+    const md = `# ${title}\n\n_${now.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} · ${$('mode').selectedOptions[0].text}_\n\n${text}\n\n## Transcript\n\n${full}\n`;
+    // keep it searchable on this phone, inside every project ticked for this call (or a "Call notes" pack)
+    const targets = packs.filter(p => p.enabled);
+    if (!targets.length){ let p = packs.find(x => x.name === 'Call notes'); if (!p){ p = { id: 'pcallnotes', name: 'Call notes', enabled: false, docs: [] }; packs.push(p); } targets.push(p); }
+    for (const p of targets){ p.docs.push({ name: filename, text: md, added: Date.now(), debrief: true }); await idb.put(p); }
+    refreshPacks();
+    btn.textContent = 'Saved ✓';
+    await shareOrDownload(filename, md);
+  }catch(e){ setErr('Debrief: ' + e.message); }
+  finally{ btn.disabled = false; setTimeout(() => { btn.textContent = 'Debrief'; }, 2000); }
+};
+$('btnExport').onclick = () => shareOrDownload('call-transcript-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.txt',
+  state.lines.map(l => `${new Date(l.t).toLocaleTimeString()}  ${state.me == null ? 'SPEAKER ' + (l.spk + 1) : who(l.spk)}: ${l.text}`).join('\n'));
+$('btnClear').onclick = () => { if (confirm('Clear the transcript?')){ state.lines = []; state.interim = ''; state.me = null; $('hintMe').textContent = ''; render(); } };
+
+load(); refreshPacks();
+if (!$('akey').value || !$('dkey').value) $('sheet').classList.add('open');
+})();
+</script>
+</body>
+</html>

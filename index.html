@@ -60,7 +60,10 @@ textarea{min-height:90px;resize:vertical}
 .hint{font-size:13px;color:var(--muted);margin-top:6px}
 .packs{list-style:none;padding:0;margin:8px 0 0}
 .packs li{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);padding:10px 12px;border-radius:10px;margin-bottom:6px}
-.packs li input{width:22px;height:22px;margin:0;flex:none}
+.packs li[role=switch]{cursor:pointer;user-select:none;-webkit-user-select:none}
+.packs li.on{border-color:var(--accent);background:var(--say-bg)}
+.packs .pill{flex:none;min-width:44px;text-align:center;font-size:13px;font-weight:600;padding:5px 8px;border-radius:99px;background:var(--chip);color:var(--muted)}
+.packs li.on .pill{background:var(--accent);color:var(--accent-ink)}
 .packs .n{flex:1;min-width:0}
 .packs .n small{display:block;color:var(--muted);font-size:12px}
 .packs li button{min-height:32px;padding:4px 8px;border:0;background:none;color:var(--muted)}
@@ -195,16 +198,20 @@ function renderPacks(){
   const ul = $('packs'); ul.innerHTML = '';
   if (!packs.length){ const li = document.createElement('li'); li.textContent = 'No notes imported yet.'; li.style.color = 'var(--muted)'; ul.append(li); return; }
   for (const p of packs){
-    const li = document.createElement('li');
-    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!p.enabled;
-    cb.onchange = async () => { p.enabled = cb.checked; await idb.put(p); buildIndex(); };
+    // the whole row is the toggle: tap anywhere on it
+    const li = document.createElement('li'); li.setAttribute('role', 'switch'); li.tabIndex = 0;
+    const pill = document.createElement('span'); pill.className = 'pill';
+    const paint = () => { li.classList.toggle('on', !!p.enabled); li.setAttribute('aria-checked', String(!!p.enabled)); pill.textContent = p.enabled ? 'On' : 'Off'; };
+    const toggle = async () => { p.enabled = !p.enabled; paint(); await idb.put(p); buildIndex(); };
+    li.onclick = toggle;
+    li.onkeydown = e => { if (e.key === ' ' || e.key === 'Enter'){ e.preventDefault(); toggle(); } };
     const n = document.createElement('div'); n.className = 'n'; n.textContent = p.name;
     const sm = document.createElement('small'); const notes = p.docs.filter(d => d.debrief).length;
     sm.textContent = `${p.docs.length} file${p.docs.length === 1 ? '' : 's'}` + (notes ? ` · ${notes} debrief${notes === 1 ? '' : 's'}` : '');
     n.append(sm);
     const rm = document.createElement('button'); rm.textContent = '✕'; rm.setAttribute('aria-label', 'Remove ' + p.name);
-    rm.onclick = async () => { if (!confirm('Remove ' + p.name + ' from this phone?')) return; await idb.del(p.id); refreshPacks(); };
-    li.append(cb, n, rm); ul.append(li);
+    rm.onclick = async e => { e.stopPropagation(); if (!confirm('Remove ' + p.name + ' from this phone?')) return; await idb.del(p.id); refreshPacks(); };
+    paint(); li.append(pill, n, rm); ul.append(li);
   }
 }
 $('btnImport').onclick = () => $('fileInput').click();

@@ -49,7 +49,7 @@ def project_name(pid, pdir):
 
 
 def render(proj, rel, text):
-    front, body = split_front(re.sub(r'^\[updated:.*\]\s*$', '', text, flags=re.M))
+    front, body = split_front(re.sub(r'^\[updated:.*$', '', text, flags=re.M))
     body = re.sub(r'\[(stated|observed|inferred)\] ', '', body)
     body = re.sub(r'\[\[([^\]]+)\]\]', r'\1', body)
     title = rel[:-3].replace('/', ' — ').replace('-', ' ').title()

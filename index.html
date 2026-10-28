@@ -108,11 +108,16 @@ textarea{min-height:90px;resize:vertical}
   <textarea id="brief" placeholder="e.g. Hiring manager round with Dana (VP Corp Dev). Land: pricing project, Bears analytics, why corp dev."></textarea>
 
   <h2>Project notes</h2>
+  <label>Notes passphrase (unlocks your auto-updated Claude project notes)</label>
+  <input id="npass" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="xxxxxx-xxxxxx-xxxxxx-xxxxxx">
+  <div class="bar" style="margin-top:8px"><button id="btnSyncNotes">Check for new notes</button></div>
+  <div id="syncStatus" class="hint"></div>
+  <label style="margin-top:14px">Add other files (resume, decks, PDFs)</label>
   <button id="btnImport">+ Import files</button>
   <input type="file" id="fileInput" multiple accept=".md,.txt,.csv,.json,.pdf,.docx,.pptx,.xlsx,text/*,application/pdf" hidden>
   <ul class="packs" id="packs"></ul>
   <div id="packStatus"></div>
-  <div class="hint">Import copilot-notes.md (all your Claude projects in one file), or any resume, deck or PDF. Each project becomes a toggle; importing a newer copy replaces the old one. Everything stays on this phone; only the few snippets matching the conversation are sent with each suggestion.</div>
+  <div class="hint">Your Claude project notes refresh on their own each morning; each project is a toggle. Files you import yourself stay on this phone and survive refreshes. Only the few snippets matching the conversation are sent with each suggestion.</div>
 
   <h2>Behavior</h2>
   <label class="check"><input type="checkbox" id="auto" checked> Auto-suggest when they finish a question</label>
@@ -138,7 +143,7 @@ const state = { lines: [], interim: '', running: false, me: null, history: [] };
 const setErr = m => { $('err').textContent = m || ''; };
 
 // ---------- settings persistence ----------
-const fields = ['mode','brief','model','akey','dkey'];
+const fields = ['mode','brief','model','akey','dkey','npass'];
 function save(){ try{ const s = { auto: $('auto').checked, wake: $('wake').checked }; fields.forEach(f => s[f] = $(f).value); localStorage.setItem(STORE, JSON.stringify(s)); }catch(e){} }
 function load(){ try{ const s = JSON.parse(localStorage.getItem(STORE) || '{}'); fields.forEach(f => { if (s[f] != null) $(f).value = s[f]; }); if (s.auto != null) $('auto').checked = s.auto; if (s.wake != null) $('wake').checked = s.wake; }catch(e){} }
 fields.forEach(f => $(f).addEventListener('change', save));
@@ -227,6 +232,50 @@ $('fileInput').addEventListener('change', async e => {
   $('packStatus').textContent = ok ? `Imported ${ok} item${ok === 1 ? '' : 's'}. Tick the projects for this call.` : '';
   refreshPacks();
 });
+
+// ---------- auto-updated notes (encrypted file published next to this page) ----------
+const SYNC_KEY = 'callcopilot.phone.notesGenerated';
+const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+async function decryptPack(doc, pass){
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', hash: doc.kdf.hash, iterations: doc.kdf.iterations, salt: b64(doc.kdf.salt) },
+    base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(doc.nonce) }, key, b64(doc.ct));
+  return new TextDecoder().decode(plain);
+}
+async function syncNotes({ force = false } = {}){
+  const pass = $('npass').value.trim(); const st = $('syncStatus');
+  if (!pass){ st.textContent = 'Enter the notes passphrase to load your project notes.'; return; }
+  let doc;
+  try{
+    const res = await fetch('notes.enc.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) throw new Error(res.status);
+    doc = await res.json();
+  }catch(e){ st.textContent = 'Couldn’t reach the notes file (offline?). Using the copy on this phone.'; return; }
+  let have = ''; try{ have = localStorage.getItem(SYNC_KEY) || ''; }catch(_){}
+  const when = new Date(doc.generated).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  if (!force && have === doc.generated && packs.some(p => p.auto)){ st.textContent = `Notes up to date (${when}).`; return; }
+  st.textContent = 'Unlocking notes…';
+  let text;
+  try{ text = await decryptPack(doc, pass); }
+  catch(e){ st.textContent = 'Wrong passphrase: the notes didn’t unlock. Check it and tap “Check for new notes”.'; return; }
+  const parts = text.split(/^<!--\s*project:\s*(.+?)\s*-->\s*$/m);
+  let n = 0;
+  for (let i = 1; i < parts.length; i += 2){
+    const name = parts[i].trim(), body = parts[i + 1].trim(); if (!body) continue;
+    let p = packs.find(x => x.name.toLowerCase() === name.toLowerCase());
+    if (!p){ p = { id: 'p' + Date.now() + Math.random().toString(36).slice(2, 6), name, enabled: false, docs: [] }; packs.push(p); }
+    p.auto = true;
+    p.docs = p.docs.filter(d => d.name !== 'claude-notes.md');   // keep debriefs and your own imports
+    p.docs.unshift({ name: 'claude-notes.md', text: body, added: Date.now() });
+    await idb.put(p); n++;
+  }
+  try{ localStorage.setItem(SYNC_KEY, doc.generated); }catch(_){}
+  st.textContent = `Loaded ${n} projects · updated ${when}.`;
+  refreshPacks();
+}
+$('btnSyncNotes').onclick = () => { save(); syncNotes({ force: true }); };
+$('npass').addEventListener('change', () => syncNotes({ force: true }));
 
 // ---------- local search (BM25) ----------
 const STOP = new Set('a an and are as at be been but by can could did do does for from had has have he her his how i if in into is it its just me my of on or our so than that the their them then there these they this to up us was we were what when where which who why will with would you your yeah okay ok um uh like really think know going get got also about more some any one'.split(' '));
@@ -506,8 +555,8 @@ $('btnExport').onclick = () => shareOrDownload('call-transcript-' + new Date().t
   state.lines.map(l => `${new Date(l.t).toLocaleTimeString()}  ${state.me == null ? 'SPEAKER ' + (l.spk + 1) : who(l.spk)}: ${l.text}`).join('\n'));
 $('btnClear').onclick = () => { if (confirm('Clear the transcript?')){ state.lines = []; state.interim = ''; state.me = null; $('hintMe').textContent = ''; render(); } };
 
-load(); refreshPacks();
-if (!$('akey').value || !$('dkey').value) $('sheet').classList.add('open');
+load(); refreshPacks().then(() => syncNotes());
+if (!$('akey').value || !$('dkey').value || !$('npass').value) $('sheet').classList.add('open');
 })();
 </script>
 </body>

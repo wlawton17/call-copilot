@@ -31,6 +31,12 @@ button.primary{background:var(--accent);color:var(--accent-ink);border-color:var
 button:disabled{opacity:.45}
 main{flex:1;display:flex;flex-direction:column;gap:12px;padding:12px 16px;min-height:0}
 #err{color:var(--warn);font-size:14px}
+.status{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;font-size:12px}
+.meterwrap{flex:1 0 100%;height:6px;border-radius:3px;background:var(--chip);overflow:hidden}
+#meter{height:100%;width:0;background:var(--you);transition:width .2s}
+.stat{padding:3px 8px;border-radius:99px;background:var(--chip);color:var(--muted)}
+.stat.ok{color:var(--you)} .stat.warn{color:var(--accent)} .stat.bad{color:var(--warn);font-weight:600}
+#ver{font-size:12px;color:var(--muted);margin-top:18px}
 #err:empty{display:none}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
 #suggest{min-height:120px}
@@ -83,6 +89,12 @@ textarea{min-height:90px;resize:vertical}
 </header>
 
 <main>
+  <div class="status">
+    <div class="meterwrap" aria-hidden="true"><div id="meter"></div></div>
+    <span id="sMic" class="stat">Mic: off</span>
+    <span id="sDg" class="stat">Transcribe: off</span>
+    <span id="sAI" class="stat">Claude: idle</span>
+  </div>
   <div id="err"></div>
   <div class="card" id="suggest"><div class="empty">Open Setup to add your keys and notes, then tap Start. Put the phone near the laptop speaker.</div></div>
   <div class="ask">
@@ -134,8 +146,12 @@ textarea{min-height:90px;resize:vertical}
   <label>Deepgram API key</label>
   <input id="dkey" type="password" autocomplete="off" placeholder="Deepgram key">
 
+  <div class="bar" style="margin-top:10px"><button id="btnTest">Test keys</button></div>
+  <div id="testOut" class="hint"></div>
+
   <h2>Housekeeping</h2>
   <div class="bar"><button id="btnClear">Clear transcript</button><button id="btnExport">Share transcript</button></div>
+  <div id="ver">Version 4 · Oct 29</div>
 </div>
 
 <script>
@@ -365,16 +381,41 @@ function maybeAuto(text){
 
 // ---------- audio → Deepgram (raw 16 kHz PCM, works on iPhone and Android) ----------
 let ws, ctx, src, proc, stream, ka, wakeLock, buf = [];
+// live health readout: mic level, transcription, Claude
+const health = { level: 0, heardAt: 0, wordsAt: 0, loudSince: 0 };
+function setStat(id, text, cls){ const el = $(id); el.textContent = text; el.className = 'stat ' + (cls || ''); }
+let watchdog;
 async function start(){
   setErr('');
   const key = $('dkey').value.trim();
   if (!key){ setErr('Add your Deepgram key in Setup.'); $('sheet').classList.add('open'); return; }
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia){ setErr('This browser can’t use the microphone here. Open the page in Safari or Chrome at its https address.'); return; }
+  // iPhone only lets audio start inside the tap itself, so create the audio engine before any await
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const resumed = ctx.resume();
+  setStat('sMic', 'Mic: asking…', 'warn');
   try{
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 } });
-  }catch(e){ setErr('Microphone blocked. Allow it for this site in your browser settings.'); return; }
-  ctx = new (window.AudioContext || window.webkitAudioContext)();
-  await ctx.resume();
+  }catch(e){
+    try{ ctx.close(); }catch(_){}
+    setStat('sMic', 'Mic: blocked', 'bad');
+    setErr(e.name === 'NotAllowedError'
+      ? 'Microphone blocked. iPhone: Settings › Apps › Safari › Microphone › Allow (or tap “aA” in the address bar › Website Settings › Microphone › Allow), then reload.'
+      : e.name === 'NotReadableError' || e.name === 'AbortError'
+        ? 'The microphone is busy in another app (for example Claude voice mode on this same phone). Close that, then tap Start again.'
+        : 'Couldn’t start the microphone: ' + e.message);
+    return;
+  }
+  try{ await resumed; }catch(_){}
+  if (ctx.state !== 'running'){ try{ await ctx.resume(); }catch(_){} }
+  const track = stream.getAudioTracks()[0];
+  const lost = why => { if (!state.running) return; setStat('sMic', 'Mic: lost', 'bad'); setErr(why); stop(); };
+  track.addEventListener('ended', () => lost('The microphone stopped. If you switched apps or another app took the mic (like Claude voice mode on this phone), come back and tap Start.'));
+  track.addEventListener('mute', () => { if (state.running) setStat('sMic', 'Mic: paused by iPhone', 'bad'); });
+  track.addEventListener('unmute', () => { if (state.running) setStat('sMic', 'Mic: on', 'ok'); });
+  ctx.onstatechange = () => { if (state.running && ctx.state !== 'running'){ setStat('sMic', 'Mic: interrupted', 'bad'); ctx.resume().catch(() => {}); } };
   const rate = ctx.sampleRate;
+  setStat('sDg', 'Transcribe: connecting…', 'warn');
   const url = 'wss://api.deepgram.com/v1/listen?model=nova-3&language=en&smart_format=true&punctuate=true&diarize=true&interim_results=true&endpointing=400&utterance_end_ms=1200&vad_events=true&encoding=linear16&channels=1&sample_rate=16000';
   ws = new WebSocket(url, ['token', key]);
   ws.binaryType = 'arraybuffer';
@@ -385,6 +426,10 @@ async function start(){
     proc.onaudioprocess = e => {
       if (ws.readyState !== 1) return;
       const inp = e.inputBuffer.getChannelData(0); const len = Math.floor(inp.length / ratio); const out = new Int16Array(len);
+      let sq = 0; for (let i = 0; i < inp.length; i += 4) sq += inp[i] * inp[i];
+      health.level = Math.min(1, Math.sqrt(sq / (inp.length / 4)) * 8);
+      const now = Date.now();
+      if (health.level > 0.08){ health.heardAt = now; if (!health.loudSince) health.loudSince = now; }
       for (let i = 0; i < len; i++){
         const a = Math.floor(i * ratio), b = Math.min(inp.length, Math.floor((i + 1) * ratio)); let s = 0;
         for (let j = a; j < b; j++) s += inp[j];
@@ -392,22 +437,49 @@ async function start(){
       }
       ws.send(out.buffer);
     };
-    const mute = ctx.createGain(); mute.gain.value = 0;
-    src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+    // the processor must reach the speakers to keep running on iPhone; its output stays silent
+    src.connect(proc); proc.connect(ctx.destination);
     ka = setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'KeepAlive' })); }, 8000);
+    setStat('sDg', 'Transcribe: live', 'ok'); setStat('sMic', 'Mic: on', 'ok');
   };
-  ws.onerror = () => setErr('Deepgram connection failed. Check the key and your signal.');
-  ws.onclose = e => { if (state.running && e.code !== 1000){ setErr('Transcription disconnected (' + e.code + '). Tap Start to reconnect.'); stop(); } };
+  let opened = false; ws.addEventListener('open', () => { opened = true; });
+  ws.onerror = () => {};
+  ws.onclose = e => {
+    if (!state.running) return;
+    setStat('sDg', 'Transcribe: off', 'bad');
+    setErr(opened
+      ? 'Transcription dropped (' + e.code + '), usually a signal blip. Tap Start to reconnect.'
+      : 'Deepgram refused the connection. The Deepgram key is most likely wrong or out of credit: use Setup › Test keys.');
+    stop();
+  };
   ws.onmessage = m => {
     let d; try{ d = JSON.parse(m.data); }catch(_){ return; }
     if (d.type === 'Results'){
       const alt = d.channel?.alternatives?.[0]; if (!alt) return;
+      if ((alt.transcript || '').trim()){ health.wordsAt = Date.now(); health.loudSince = 0; }
       if (d.is_final){ if (alt.words?.length) buf.push(...alt.words); state.interim = ''; if (d.speech_final) flush(); else render(); }
       else { state.interim = alt.transcript || ''; render(); }
     } else if (d.type === 'UtteranceEnd') flush();
   };
   state.running = true; $('dMic').classList.add('on');
   $('bigStart').textContent = 'Stop'; $('bigStart').classList.remove('primary');
+  Object.assign(health, { level: 0, heardAt: 0, wordsAt: 0, loudSince: 0 });
+  clearInterval(watchdog);
+  const startedAt = Date.now();
+  watchdog = setInterval(() => {
+    $('meter').style.width = Math.round(health.level * 100) + '%';
+    if (!state.running || ws.readyState !== 1) return;
+    const now = Date.now();
+    if (health.wordsAt && now - health.wordsAt < 4000) setStat('sDg', 'Transcribe: hearing words', 'ok');
+    else if (health.heardAt && now - health.heardAt < 1500) setStat('sDg', 'Transcribe: listening', 'ok');
+    else setStat('sDg', 'Transcribe: live (quiet)', 'ok');
+    // sound but no words for a while: too quiet, too far, or the wrong audio
+    if (health.loudSince && now - health.loudSince > 10000 && (!health.wordsAt || health.wordsAt < health.loudSince)){
+      setErr('Hearing sound but no words yet. Turn the laptop volume up and put the phone within a foot or two of its speaker.');
+      health.loudSince = 0;
+    }
+    if (!health.heardAt && now - startedAt > 8000){ setErr('The mic is picking up near silence. Check the laptop volume, and that nothing else on this phone is using the mic.'); health.heardAt = now; }
+  }, 250);
   if ($('wake').checked && navigator.wakeLock){ try{ wakeLock = await navigator.wakeLock.request('screen'); }catch(_){} }
 }
 function flush(){
@@ -421,7 +493,10 @@ function flush(){
   buf = []; state.interim = ''; render();
 }
 function stop(){
-  state.running = false; clearInterval(ka);
+  state.running = false; clearInterval(ka); clearInterval(watchdog);
+  $('meter').style.width = '0%';
+  if (!$('sMic').classList.contains('bad')) setStat('sMic', 'Mic: off', '');
+  if (!$('sDg').classList.contains('bad')) setStat('sDg', 'Transcribe: off', '');
   try{ proc && proc.disconnect(); src && src.disconnect(); }catch(_){}
   try{ stream && stream.getTracks().forEach(t => t.stop()); }catch(_){}
   try{ ctx && ctx.close(); }catch(_){}
@@ -446,17 +521,28 @@ const speakerNote = () => state.me == null
   ? 'Speakers are labelled SPEAKER 1, 2… by voice; which one is the user is not yet known. Infer from context (the user is the one being interviewed / briefed per the brief).'
   : 'YOU = the user. THEM = everyone else on the call.';
 async function callClaude(body, signal){
-  const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', signal,
-    headers: { 'content-type': 'application/json', 'x-api-key': $('akey').value.trim(), 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-    body: JSON.stringify(body) });
-  if (!res.ok){ let m = res.status + ''; try{ m = (await res.json()).error.message; }catch(_){} throw new Error(m); }
+  let res;
+  try{
+    res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', signal,
+      headers: { 'content-type': 'application/json', 'x-api-key': $('akey').value.trim(), 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify(body) });
+  }catch(e){ if (e.name === 'AbortError') throw e; throw new Error('couldn’t reach Anthropic (no signal, or a content blocker is stopping it).'); }
+  if (!res.ok){
+    let m = ''; try{ m = (await res.json()).error.message; }catch(_){}
+    if (res.status === 401) m = 'the Anthropic key was rejected. Make a new one at console.anthropic.com › API Keys (it starts with sk-ant-api03-) and paste it in Setup.';
+    else if (res.status === 400 && /credit/i.test(m)) m = 'your Anthropic account is out of credit. Add some at console.anthropic.com › Billing.';
+    else if (res.status === 404) m = `model “${body.model}” wasn’t found. In Setup, set Model to claude-haiku-5-5.`;
+    else if (res.status === 429 || res.status === 529) m = 'Anthropic is busy or rate-limiting. Try again in a moment.';
+    else m = res.status + (m ? ': ' + m : '');
+    throw new Error(m);
+  }
   return res;
 }
 let aiCtl = null;
 async function suggest({ trigger = '', question = '' } = {}){
   if (!$('akey').value.trim()){ setErr('Add your Anthropic key in Setup.'); return; }
   if (aiCtl) aiCtl.abort(); const ctl = aiCtl = new AbortController();
-  setErr(''); $('dAI').className = 'dot busy';
+  setErr(''); $('dAI').className = 'dot busy'; setStat('sAI', 'Claude: thinking…', 'warn');
   const label = question ? 'You asked: ' + question : trigger ? '“' + trigger + '”' : 'On demand';
   const recent = state.lines.slice(-4).map(l => l.text).join(' ');
   const hits = search(question ? question + ' ' + question : (trigger + ' ' + trigger + ' ' + recent));
@@ -494,7 +580,8 @@ CALL BRIEF: ${$('brief').value.trim() || '(none)'}`;
         if (ev.type === 'error') throw new Error(ev.error?.message || 'stream error');
       }
     }
-  }catch(e){ if (e.name !== 'AbortError') setErr('Claude: ' + e.message); }
+    setStat('sAI', text.trim() ? 'Claude: ok' : 'Claude: empty reply', text.trim() ? 'ok' : 'warn');
+  }catch(e){ if (e.name !== 'AbortError'){ setErr('Claude: ' + e.message); setStat('sAI', 'Claude: error', 'bad'); show(label, '', sources); } }
   finally{ if (aiCtl === ctl){ aiCtl = null; $('dAI').className = 'dot'; } }
 }
 function show(label, text, sources){
@@ -509,6 +596,31 @@ function show(label, text, sources){
 }
 $('btnSuggest').onclick = () => { const q = $('askBox').value.trim(); $('askBox').value = ''; $('askBox').blur(); suggest(q ? { question: q } : {}); };
 $('askBox').addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); $('btnSuggest').click(); } });
+
+// ---------- key check ----------
+function testDeepgram(key){
+  return new Promise(resolve => {
+    let done = false; const fin = v => { if (!done){ done = true; resolve(v); } };
+    let s;
+    try{ s = new WebSocket('wss://api.deepgram.com/v1/listen?model=nova-3&encoding=linear16&sample_rate=16000&channels=1', ['token', key]); }
+    catch(e){ return fin('✗ Deepgram: ' + e.message); }
+    s.onopen = () => { try{ s.send(JSON.stringify({ type: 'CloseStream' })); s.close(1000); }catch(_){} fin('✓ Deepgram key works'); };
+    s.onclose = () => fin('✗ Deepgram refused the key (wrong key, or no credit left)');
+    setTimeout(() => { try{ s.close(); }catch(_){} fin('✗ Deepgram: no answer (check your connection)'); }, 8000);
+  });
+}
+$('btnTest').onclick = async () => {
+  save(); const out = $('testOut'); out.textContent = 'Testing…';
+  const lines = [];
+  const dk = $('dkey').value.trim(), ak = $('akey').value.trim();
+  lines.push(dk ? await testDeepgram(dk) : '✗ Deepgram: no key entered');
+  if (!ak) lines.push('✗ Anthropic: no key entered');
+  else{
+    try{ await callClaude({ model: $('model').value.trim() || 'claude-haiku-5-5', max_tokens: 5, messages: [{ role: 'user', content: 'Reply OK.' }] }); lines.push('✓ Anthropic key works'); }
+    catch(e){ lines.push('✗ Anthropic: ' + e.message); }
+  }
+  out.textContent = lines.join('\n'); out.style.whiteSpace = 'pre-line';
+};
 
 // ---------- debrief ----------
 async function shareOrDownload(filename, text){

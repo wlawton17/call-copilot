@@ -85,15 +85,47 @@ def encrypt(plain, passphrase):
             'cipher': 'AES-GCM', 'nonce': b64(nonce), 'ct': b64(ct)}
 
 
+def build_docs(doc_dir, project):
+    """Project documents (e.g. HCSC Live Context) -> one pack, one marker per document."""
+    out = []
+    for dp, _, fs in os.walk(doc_dir):
+        for f in sorted(fs):
+            path = os.path.join(dp, f)
+            rel = os.path.relpath(path, doc_dir).replace(os.sep, '/')
+            try:
+                text = open(path, encoding='utf-8').read().strip()
+            except UnicodeDecodeError:
+                continue
+            if text:
+                out.append(f'<!-- doc: {project} | {rel} -->\n{text}\n\n')
+    return ''.join(sorted(out))
+
+
 def main():
-    mem_dir = sys.argv[1]
-    out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(__file__), '..', 'notes.enc.json')
+    args = sys.argv[1:]
     passphrase = os.environ.get('NOTES_PASSPHRASE', '')
     if len(passphrase) < 20:
         sys.exit('NOTES_PASSPHRASE missing or too short')
-    plain = build(mem_dir)
-    if plain.count('<!-- project:') == 0:
-        sys.exit('no projects found under ' + mem_dir)
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+    if args and args[0] == '--docs':
+        # notes_pack.py --docs DOC_DIR "Project name" [OUT_JSON]
+        doc_dir, project = args[1], args[2]
+        out = args[3] if len(args) > 3 else os.path.join(root, 'docs-' + re.sub(r'[^a-z0-9]+', '-', project.lower()).strip('-') + '.enc.json')
+        plain = build_docs(doc_dir, project)
+        if not plain:
+            sys.exit('no documents found under ' + doc_dir)
+        count = plain.count('<!-- doc:')
+    else:
+        mem_dir = args[0]
+        out = args[1] if len(args) > 1 else os.path.join(root, 'notes.enc.json')
+        plain = build(mem_dir)
+        if plain.count('<!-- project:') == 0:
+            sys.exit('no projects found under ' + mem_dir)
+        count = plain.count('<!-- project:')
+    _write(plain, passphrase, out, count)
+
+
+def _write(plain, passphrase, out, count):
     # change marker keyed by the passphrase, so it reveals nothing about the notes
     tag = hmac.new(passphrase.encode(), plain.encode(), hashlib.sha256).hexdigest()
     if os.path.exists(out):
@@ -105,10 +137,20 @@ def main():
     doc = encrypt(plain, passphrase)
     doc['tag'] = tag
     doc['generated'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-    doc['projects'] = plain.count('<!-- project:')
+    doc['items'] = count
     with open(out, 'w') as f:
         json.dump(doc, f)
-    print('updated', doc['projects'], 'projects')
+    # keep a list of published packs so the page knows what to fetch
+    manifest = os.path.join(os.path.dirname(os.path.abspath(out)), 'packs.json')
+    try:
+        names = json.load(open(manifest))
+    except Exception:
+        names = ['notes.enc.json']
+    if os.path.basename(out) not in names:
+        names.append(os.path.basename(out))
+        with open(manifest, 'w') as f:
+            json.dump(names, f)
+    print('updated', count, 'items')
 
 
 if __name__ == '__main__':

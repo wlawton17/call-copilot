@@ -303,34 +303,62 @@ async function decryptPack(doc, pass){
 async function syncNotes({ force = false } = {}){
   const pass = $('npass').value.trim(); const st = $('syncStatus');
   if (!pass){ st.textContent = 'Enter the notes passphrase to load your project notes.'; return; }
-  let doc;
-  try{
-    const res = await fetch('notes.enc.json?t=' + Date.now(), { cache: 'no-store' });
-    if (!res.ok) throw new Error(res.status);
-    doc = await res.json();
-  }catch(e){ st.textContent = 'Couldn’t reach the notes file (offline?). Using the copy on this phone.'; return; }
-  let have = ''; try{ have = localStorage.getItem(SYNC_KEY) || ''; }catch(_){}
-  const when = new Date(doc.generated).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
-  if (!force && have === doc.generated && packs.some(p => p.auto)){ st.textContent = `Notes up to date (${when}).`; return; }
-  st.textContent = 'Unlocking notes…';
-  let text;
-  try{ text = await decryptPack(doc, pass); }
-  catch(e){ st.textContent = 'Wrong passphrase: the notes didn’t unlock. Check it and tap “Check for new notes”.'; return; }
-  const parts = text.split(/^<!--\s*project:\s*(.+?)\s*-->\s*$/m);
-  let n = 0;
-  for (let i = 1; i < parts.length; i += 2){
-    const name = parts[i].trim(), body = parts[i + 1].trim(); if (!body) continue;
+  // packs.json lists every published file: saved project notes plus any project-document packs
+  let files = ['notes.enc.json'];
+  try{ const r = await fetch('packs.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok){ const j = await r.json(); if (Array.isArray(j) && j.length) files = j; } }catch(_){}
+  let seen = {}; try{ seen = JSON.parse(localStorage.getItem(SYNC_KEY + '.map') || '{}'); }catch(_){}
+  const findPack = name => {
     let p = packs.find(x => x.name.toLowerCase() === name.toLowerCase());
     if (!p){ p = { id: 'p' + Date.now() + Math.random().toString(36).slice(2, 6), name, enabled: false, docs: [] }; packs.push(p); }
-    p.auto = true;
-    p.docs = p.docs.filter(d => d.name !== 'claude-notes.md');   // keep debriefs and your own imports
-    p.docs.unshift({ name: 'claude-notes.md', text: body, added: Date.now() });
-    await idb.put(p); n++;
+    return p;
+  };
+  const report = []; let latest = 0, offline = false, wrong = false, changed = false;
+  for (const file of files){
+    let doc;
+    try{ const res = await fetch(file + '?t=' + Date.now(), { cache: 'no-store' }); if (!res.ok) throw 0; doc = await res.json(); }
+    catch(_){ offline = true; continue; }
+    latest = Math.max(latest, Date.parse(doc.generated) || 0);
+    if (!force && seen[file] === doc.generated && packs.some(p => p.auto)) continue;
+    st.textContent = 'Unlocking notes…';
+    let text;
+    try{ text = await decryptPack(doc, pass); }catch(_){ wrong = true; continue; }
+    changed = true;
+    // saved project notes: one block per project
+    const parts = text.split(/^<!--\s*project:\s*(.+?)\s*-->\s*$/m);
+    let n = 0;
+    for (let i = 1; i < parts.length; i += 2){
+      const body = parts[i + 1].trim(); if (!body) continue;
+      const p = findPack(parts[i].trim()); p.auto = true;
+      p.docs = p.docs.filter(d => d.name !== 'claude-notes.md');   // keep debriefs and your own imports
+      p.docs.unshift({ name: 'claude-notes.md', text: body, added: Date.now() });
+      await idb.put(p); n++;
+    }
+    // project documents: one block per document, replaced wholesale on each refresh
+    const dparts = text.split(/^<!--\s*doc:\s*(.+?)\s*\|\s*(.+?)\s*-->\s*$/m);
+    const byPack = new Map();
+    for (let i = 1; i < dparts.length; i += 3){
+      const body = dparts[i + 2].trim(); if (!body) continue;
+      const p = findPack(dparts[i].trim());
+      if (!byPack.has(p)) byPack.set(p, []);
+      byPack.get(p).push({ name: dparts[i + 1].trim(), text: body.slice(0, 600000), added: Date.now(), projectDoc: true, src: file });
+    }
+    for (const [p, docs] of byPack){
+      p.auto = true;
+      p.docs = p.docs.filter(d => !(d.projectDoc && d.src === file)).concat(docs);
+      await idb.put(p); n += docs.length;
+    }
+    seen[file] = doc.generated;
+    report.push(n);
   }
-  try{ localStorage.setItem(SYNC_KEY, doc.generated); }catch(_){}
-  st.textContent = `Loaded ${n} projects · updated ${when}.`;
-  refreshPacks();
+  try{ localStorage.setItem(SYNC_KEY + '.map', JSON.stringify(seen)); }catch(_){}
+  const when = latest ? new Date(latest).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '';
+  const docCount = packs.reduce((s, p) => s + p.docs.filter(d => d.projectDoc).length, 0);
+  if (wrong) st.textContent = 'Wrong passphrase: the notes didn’t unlock. Check it and tap “Check for new notes”.';
+  else if (offline && !changed) st.textContent = 'Couldn’t reach the notes (offline?). Using the copy on this phone.';
+  else st.textContent = (changed ? 'Updated' : 'Up to date') + (when ? ` · newest ${when}` : '') + (docCount ? ` · ${docCount} project documents` : '') + '.';
+  if (changed) refreshPacks();
 }
+setInterval(() => { if (document.visibilityState === 'visible') syncNotes(); }, 30 * 60 * 1000);
 $('btnSyncNotes').onclick = () => { save(); syncNotes({ force: true }); };
 $('npass').addEventListener('change', () => syncNotes({ force: true }));
 

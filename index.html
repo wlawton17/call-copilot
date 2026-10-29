@@ -127,6 +127,12 @@ textarea{min-height:90px;resize:vertical}
   <input id="npass" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="xxxxxx-xxxxxx-xxxxxx-xxxxxx">
   <div class="bar" style="margin-top:8px"><button id="btnSyncNotes">Check for new notes</button></div>
   <div id="syncStatus" class="hint"></div>
+  <label style="margin-top:14px">Paste notes into a project (e.g. a briefing you copied from Claude)</label>
+  <textarea id="pasteBox" placeholder="Paste text here…"></textarea>
+  <div class="bar" style="margin-top:8px">
+    <select id="pasteTo" aria-label="Project to add the notes to"></select>
+    <button id="btnPaste">Add</button>
+  </div>
   <label style="margin-top:14px">Add other files (resume, decks, PDFs)</label>
   <button id="btnImport">+ Import files</button>
   <input type="file" id="fileInput" multiple accept=".md,.txt,.csv,.json,.pdf,.docx,.pptx,.xlsx,text/*,application/pdf" hidden>
@@ -151,7 +157,7 @@ textarea{min-height:90px;resize:vertical}
 
   <h2>Housekeeping</h2>
   <div class="bar"><button id="btnClear">Clear transcript</button><button id="btnExport">Share transcript</button></div>
-  <div id="ver">Version 4 · Oct 29</div>
+  <div id="ver">Version 5 · Oct 29</div>
 </div>
 
 <script>
@@ -210,7 +216,35 @@ function packNameFor(file, text){
 // ---------- packs ----------
 let packs = [];
 async function refreshPacks(){ try{ packs = (await idb.all()) || []; }catch(e){ packs = []; } packs.sort((a, b) => a.name.localeCompare(b.name)); renderPacks(); buildIndex(); }
+function renderPasteTargets(){
+  const sel = $('pasteTo'); const keep = sel.value;
+  sel.innerHTML = '';
+  const ordered = [...packs].sort((a, b) => (b.enabled - a.enabled) || a.name.localeCompare(b.name));
+  for (const p of ordered){ const o = document.createElement('option'); o.value = p.id; o.textContent = p.name; sel.append(o); }
+  const o = document.createElement('option'); o.value = '__new'; o.textContent = 'New project…'; sel.append(o);
+  if (keep && [...sel.options].some(x => x.value === keep)) sel.value = keep;
+}
+$('btnPaste').onclick = async () => {
+  const text = $('pasteBox').value.trim();
+  if (!text){ $('packStatus').textContent = 'Paste some text first.'; return; }
+  let p;
+  if ($('pasteTo').value === '__new'){
+    const name = (prompt('Name for the new project?') || '').trim(); if (!name) return;
+    p = packs.find(x => x.name.toLowerCase() === name.toLowerCase());
+    if (!p){ p = { id: 'p' + Date.now() + Math.random().toString(36).slice(2, 6), name, enabled: true, docs: [] }; packs.push(p); }
+  } else p = packs.find(x => x.id === $('pasteTo').value);
+  if (!p) return;
+  const first = text.split('\n')[0].replace(/^#+\s*/, '').slice(0, 50).trim() || 'notes';
+  const stamp = new Date().toLocaleDateString('en-CA');
+  p.docs.push({ name: `Pasted ${stamp} - ${first}`, text: text.slice(0, 400000), added: Date.now() });
+  p.enabled = true;   // you pasted it for a reason: switch the project on
+  await idb.put(p);
+  $('pasteBox').value = '';
+  $('packStatus').textContent = `Added to ${p.name} (switched on). It stays on this phone and survives the daily refresh.`;
+  refreshPacks();
+};
 function renderPacks(){
+  renderPasteTargets();
   const ul = $('packs'); ul.innerHTML = '';
   if (!packs.length){ const li = document.createElement('li'); li.textContent = 'No notes imported yet.'; li.style.color = 'var(--muted)'; ul.append(li); return; }
   for (const p of packs){
@@ -556,7 +590,8 @@ SAY: <one or two natural spoken sentences the user could say out loud, first per
 
 Rules:
 - Ground every fact, number, name and experience in the call brief, the notes snippets, or the transcript. Never invent any of them. Snippets are keyword matches: ignore ones that aren't about what was just asked.
-- If nothing covers it, give an honest bridge (acknowledge, offer what IS known, offer to follow up).
+- Always give a usable answer. If the notes don't cover the specifics, still take a clear position and give a structure the user can speak to (e.g. "Bottom line: yes, because [main finding]; the open question is [x]"), built from the transcript and brief. Put any fact, number or name the user must supply in [square brackets]; never make one up.
+- Only fall back to "let me confirm and follow up" when the question asks for one precise fact (a number, date or name) that nothing here contains.
 - Respond to the most recent thing the other side said. Don't repeat points the user already made.
 - The transcript is speech-to-text from a phone mic, so expect mis-hearings.
 - If nothing needs a response yet, output only: —

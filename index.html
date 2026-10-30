@@ -37,6 +37,9 @@ main{flex:1;display:flex;flex-direction:column;gap:12px;padding:12px 16px;min-he
 .stat{padding:3px 8px;border-radius:99px;background:var(--chip);color:var(--muted)}
 .stat.ok{color:var(--you)} .stat.warn{color:var(--accent)} .stat.bad{color:var(--warn);font-weight:600}
 #ver{font-size:12px;color:var(--muted);margin-top:18px}
+#fresh{font-size:12px;color:var(--muted)}
+#fresh:empty{display:none}
+#fresh.stale{color:var(--warn);font-weight:600}
 #err:empty{display:none}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
 #suggest{min-height:120px}
@@ -101,6 +104,7 @@ textarea{min-height:90px;resize:vertical}
     <input id="askBox" placeholder="Quick ask (only you see this)" enterkeyhint="send">
     <button id="btnSuggest">Suggest</button>
   </div>
+  <div id="fresh"></div>
   <div id="hintMe"></div>
   <div class="card" id="transcript"></div>
   <div class="bar">
@@ -157,7 +161,7 @@ textarea{min-height:90px;resize:vertical}
 
   <h2>Housekeeping</h2>
   <div class="bar"><button id="btnClear">Clear transcript</button><button id="btnExport">Share transcript</button></div>
-  <div id="ver">Version 7 · Oct 29</div>
+  <div id="ver">Version 8 · Oct 29</div>
 </div>
 
 <script>
@@ -357,8 +361,30 @@ async function syncNotes({ force = false } = {}){
   else if (offline && !changed) st.textContent = 'Couldn’t reach the notes (offline?). Using the copy on this phone.';
   else st.textContent = (changed ? 'Updated' : 'Up to date') + (when ? ` · newest ${when}` : '') + (docCount ? ` · ${docCount} project documents` : '') + '.';
   if (changed) refreshPacks();
+  showFreshness();
 }
 setInterval(() => { if (document.visibilityState === 'visible') syncNotes(); }, 30 * 60 * 1000);
+
+// "how current is what I'm working from?" on the main screen
+function ago(ts){
+  const d = new Date(ts), now = new Date();
+  const days = Math.round((new Date(now.toDateString()) - new Date(d.toDateString())) / 864e5);
+  const t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return days === 0 ? 'today ' + t : days === 1 ? 'yesterday ' + t : days + ' days ago';
+}
+function showFreshness(){
+  let seen = {}; try{ seen = JSON.parse(localStorage.getItem(SYNC_KEY + '.map') || '{}'); }catch(_){}
+  const el = $('fresh'); const bits = []; let stale = false;
+  for (const [file, gen] of Object.entries(seen)){
+    const ts = Date.parse(gen); if (!ts) continue;
+    const label = file === 'notes.enc.json' ? 'Notes' : file.replace(/^docs-|\.enc\.json$/g, '').toUpperCase().replace(/-/g, ' ').replace(/^(\S+)\s.*$/, '$1') + ' docs';
+    const old = Date.now() - ts > (file === 'notes.enc.json' ? 2 : 3) * 864e5;
+    stale = stale || old;
+    bits.push(`${label}: ${ago(ts)}${old ? ' ⚠' : ''}`);
+  }
+  el.textContent = bits.length ? bits.join(' · ') + (stale ? ' (say “update copilot” in the project)' : '') : '';
+  el.className = stale ? 'stale' : '';
+}
 $('btnSyncNotes').onclick = () => { save(); syncNotes({ force: true }); };
 $('npass').addEventListener('change', () => syncNotes({ force: true }));
 
@@ -758,7 +784,7 @@ $('btnExport').onclick = () => shareOrDownload('call-transcript-' + new Date().t
   state.lines.map(l => `${new Date(l.t).toLocaleTimeString()}  ${state.me == null ? 'SPEAKER ' + (l.spk + 1) : who(l.spk)}: ${l.text}`).join('\n'));
 $('btnClear').onclick = () => { if (confirm('Clear the transcript?')){ state.lines = []; state.interim = ''; state.me = null; $('hintMe').textContent = ''; render(); } };
 
-load(); refreshPacks().then(() => syncNotes());
+load(); showFreshness(); refreshPacks().then(() => syncNotes());
 if (!$('akey').value || !$('dkey').value || !$('npass').value) $('sheet').classList.add('open');
 })();
 </script>

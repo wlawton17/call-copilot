@@ -157,7 +157,7 @@ textarea{min-height:90px;resize:vertical}
 
   <h2>Housekeeping</h2>
   <div class="bar"><button id="btnClear">Clear transcript</button><button id="btnExport">Share transcript</button></div>
-  <div id="ver">Version 6 · Oct 29</div>
+  <div id="ver">Version 7 · Oct 29</div>
 </div>
 
 <script>
@@ -364,7 +364,20 @@ $('npass').addEventListener('change', () => syncNotes({ force: true }));
 
 // ---------- local search (BM25) ----------
 const STOP = new Set('a an and are as at be been but by can could did do does for from had has have he her his how i if in into is it its just me my of on or our so than that the their them then there these they this to up us was we were what when where which who why will with would you your yeah okay ok um uh like really think know going get got also about more some any one'.split(' '));
-const tok = s => (s.toLowerCase().match(/[a-z0-9][a-z0-9.%$'-]*/g) || []).map(w => w.replace(/[.'-]+$/, '')).filter(w => w.length > 1 && !STOP.has(w));
+// Words, plus short neighbours glued together, so speech ("CVA USA", "Cotiviti's") still matches
+// how the docs write it ("CVAUSA"). Hyphenated/dotted names also get their joined form.
+const tok = s => {
+  const raw = (s.toLowerCase().match(/[a-z0-9][a-z0-9.%$'-]*/g) || []).map(w => w.replace(/[.'-]+$/, '').replace(/'s$/, ''));
+  const out = [];
+  for (let i = 0; i < raw.length; i++){
+    const w = raw[i];
+    if (w.length > 1 && !STOP.has(w)) out.push(w);
+    if (/[-.]/.test(w)){ const j = w.replace(/[-.]/g, ''); if (j.length > 1 && j !== w) out.push(j); }
+    const n = raw[i + 1];
+    if (n && w.length <= 6 && n.length <= 6 && /^[a-z0-9]+$/.test(w + n) && !STOP.has(w) && !STOP.has(n)) out.push(w + n);
+  }
+  return out;
+};
 let index = null;
 function buildIndex(){
   const chunks = [];
@@ -381,7 +394,7 @@ function buildIndex(){
   for (const c of chunks){ total += c.len; for (const t of c.tf.keys()) df.set(t, (df.get(t) || 0) + 1); }
   index = chunks.length ? { chunks, df, avg: total / chunks.length } : null;
 }
-function search(q, k = 6, maxChars = 6000){
+function search(q, k = 8, maxChars = 8000){
   if (!index) return [];
   const qt = [...new Set(tok(q))]; if (!qt.length) return [];
   const N = index.chunks.length;
@@ -390,7 +403,15 @@ function search(q, k = 6, maxChars = 6000){
   for (const c of index.chunks){ let s = 0; for (const t of qt){ const f = c.tf.get(t); if (f) s += idf.get(t) * f * 2.4 / (f + 1.4 * (0.25 + 0.75 * c.len / index.avg)); } if (s > 0) sc.push([s, c]); }
   sc.sort((a, b) => b[0] - a[0]);
   const out = [], per = {}; let chars = 0;
-  for (const [, c] of sc){ if ((per[c.src] = (per[c.src] || 0) + 1) > 2) continue; if (chars + c.text.length > maxChars) break; out.push(c); chars += c.text.length; if (out.length >= k) break; }
+  // keep only clearly relevant chunks (style guides that mention a word once fall away),
+  // and let the best document contribute more than the rest
+  const top = sc.length ? sc[0][0] : 0;
+  for (const [s, c] of sc){
+    if (s < top * 0.4) break;
+    if ((per[c.src] = (per[c.src] || 0) + 1) > (c.src === sc[0][1].src ? 4 : 2)) continue;
+    if (chars + c.text.length > maxChars) break;
+    out.push(c); chars += c.text.length; if (out.length >= k) break;
+  }
   return out;
 }
 
